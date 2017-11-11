@@ -1,8 +1,8 @@
 /**
  * [stringify description]
- * @param  {[object]} o        [description]
- * @param  {[function(k, v) {}]} replacer [description]
- * @return {[json]}          [description]
+ * @param  {[object]} o
+ * @param  {[function(k, v) {}]}
+ * @return {[json]}
  */
 JSON.stringify = function (o, replacer) {
 	var oJSON = undefined;
