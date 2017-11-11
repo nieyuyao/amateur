@@ -26,7 +26,7 @@ JSON.stringify = function (o, replacer) {
 		var oJSON = '[';
 		for (var key in obj) {
 			var res = fn(key, obj[key]);
-			//如果fn(key, obj[key])返回的是
+			//如果fn(key, obj[key])返回的是undefined, function or null
 			if ( typeof res == 'undefined'
 				|| typeof res == 'function' || res == null) {
 				oJSON += (null + ',');
