@@ -13,3 +13,7 @@
  # diffNode.js
  
  用Virtual DOM变更DOM，模仿React
+ 
+# component.js
+ 
+ 模仿Vue,支持部分mustache语法模板，支持n-for指令，支持虚拟DOM，支持diff算法
