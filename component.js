@@ -1,10 +1,14 @@
-(function (global, Component) {
+//Fixed 修复对注释的解析
+//Fixed 对input img替换元素的支持
+//Add 支持if else-if else指令
+//Add 增加n-model双向绑定
+(function(global, Component) {
 	//CMD
 	if (typeof module == 'object' && typeof module.exports == 'object' && exports) {
 		module.exports = Component;
-	}else if (typeof define == 'function' && define.amd) {
+	} else if (typeof define == 'function' && define.amd) {
 		//AMD
-		define([], function () {
+		define([], function() {
 			return Component
 		});
 	}
@@ -87,6 +91,8 @@
 
 	function Watcher(cb) {
 		this.cb = cb || function() {};
+		this.dep = 0;
+		this.diff = 0;
 	}
 	var Observer = function Observer(v) {
 		this.v = v;
@@ -122,22 +128,27 @@
 					new Observer(newVal)
 				}
 				v = newVal;
-				self.nofity(k);
+				self.nofity(k, newVal);
 			}
 		})
 	}
 	Observer.prototype.watch = function watch(ev, callback) {
 		this[ev] ? undefined : this[ev] = [];
-		this[ev].push(callback);
+		//Fixed
+		if (callback instanceof Watcher) {
+			this[ev].splice(this.dep, 0, callback);
+		} else {
+			this[ev].push(callback);
+		}
 	}
-	Observer.prototype.nofity = function notify(k) {
+	Observer.prototype.nofity = function notify(k, v) {
 		if (this[k]) {
 			for (var i = 0; i < this[k].length; i++) {
 				if (this[k][i] instanceof Watcher) {
-					this[k][i].cb();
+					this[k][i].cb(v);
 					continue;
 				}
-				this[k][i]();
+				this[k][i](v);
 			};
 		}
 	}
@@ -161,6 +172,24 @@
 			for (var i = 0; i < this.children.length; i++) {
 				tnode.appendChild(this.children[i].render());
 			};
+			//Add 双向绑定
+			if (this.biBind) {
+				if (this.tag != 'input' && this.tag !== 'textarea') {
+					console.warn('ele which n-model are not input or textarea');
+				} else {
+					var self = this;
+					tnode.value = this.initVal;
+					self.$p.__observer__.watch(self.biBind, new Watcher(function(v) {
+						self.initVal = v;
+						tnode.value = v;
+					}));
+					//tnode注册onkeyup事件
+					tnode.onkeyup = function(e) {
+						self.$p[self.biBind] = tnode.value;
+					}
+				}
+			}
+			return tnode;
 		} else if (this.tag == '#text') {
 			tnode = document.createTextNode(this.tag);
 			tnode.nodeValue = this.content;
@@ -186,7 +215,14 @@
 	}
 	VNode.prototype.removeChild = function(child) {
 		//TODO...
-
+	}
+	//删除第index个子元素
+	VNode.prototype.remove = function(index) {
+		this.children.splice(index, 1);
+	}
+	//在index处插入元素
+	VNode.prototype.insert = function(index, vnode) {
+		this.children.splice(index, 0, vnode);
 	}
 	VNode.prototype.insertBefore = function(newVNode, refVNode) {
 		//TODO...
@@ -299,7 +335,10 @@
 			}
 			if (notAlter[i]) {
 				diffWalk(oldChildren[notAlter[i].oldIndex], newChildren[notAlter[i].newIndex], patches, walker.index);
+				return
 			}
+			// Fixed 修复 如果moves[i]与notAlter[i]都不存在,walker.index回退
+			walker.index--;
 		}
 	}
 
@@ -516,9 +555,10 @@
 				return -1;
 			case 'S':
 				var newNode = renderElement(patch.to);
-				oldNode.replaceNode(newNode, oldNode);
+				oldNode.parentNode.replaceChild(newNode, oldNode);
 				return 0;
 			case 'S-TEXT':
+				console.log(oldNode.parentNode)
 				oldNode.textContent = patch.content;
 				return 0;
 			case 'PROP':
@@ -527,6 +567,7 @@
 			default:
 				throw new Error('type is error')
 		}
+
 	}
 	/**
 	 * [renderElement]
@@ -576,18 +617,19 @@
 		this.cache = {};
 		this.root = root;
 	}
-	Path.prototype.find = function(untreadKey, alias) {
-		if (this.cache[untreadKey]) {
-			return this.cache[untreadKey];
+	Path.prototype.find = function(untreatKey, alias, exp) {
+
+		if (this.cache[untreatKey]) {
+			return this.cache[untreatKey];
 		}
-		if (untreadKey.charAt(0) == '.') {
-			alias === undefined ? untreadKey += 'this' : untreadKey += alias;
+		if (untreatKey.charAt(0) == '.') {
+			alias === undefined ? untreatKey += 'this' : untreatKey += alias;
 		}
 		var o = this.data;
 		var p = this.data;
-		var ks = untreadKey.split('.');
+		var ks = untreatKey.split('.');
 		if (alias != undefined && ks[0] != alias) {
-			return new Path(this.root, this.root).find(untreadKey);
+			return new Path(this.root, this.root).find(untreatKey);
 		}
 		for (var i = 0; i < ks.length; i++) {
 			if (ks[0] == 'this' || ks[0] == alias) {
@@ -596,25 +638,56 @@
 			p = o;
 			o = o[ks[i]];
 		};
-		this.cache[untreadKey] = {
+		this.cache[untreatKey] = {
 			p: p,
 			o: (o == undefined ? '' : o),
 			arg: ks[ks.length - 1]
 		}
-		return this.cache[untreadKey];
+		if (exp) {
+			this.cache[untreatKey].exp = exp;
+		}
+		//如果o为空字符串
+		//尝试把untreatKey能作为表达式运行
+		if (o === undefined) {
+			try {
+				return {
+					arg: (new Function([], 'return ' + untreatKey))(),
+					recalcu: true
+				}
+			} catch (err) {
+				//如果运行错误
+				var mayVar = this.resolveErr(err.toString());
+				if (mayVar != untreatKey) {
+					return this.find(mayVar, undefined, untreatKey);
+				} else {
+					return this.cache[untreatKey];
+				}
+			}
+		} else {
+			return this.cache[untreatKey];
+		}
+	}
+	//解析错获取未定义的变量的名字
+	Path.prototype.resolveErr = function(err) {
+		return err.replace(/ReferenceError\s*:\s*/g, '').match(/^\S*\s/)[0].trim();
 	}
 
 	function parseHTML(html) {
-		var startEndReg = /(<[^\/>]+>|<\/[^\/>]+>)/g;
-		var startReg = /<[^\/>]+>/;
+		var commentReg = /<!--\s*.*\s*-->/g;
+		var startEndReg = /(<[^\/][^<]+("[^\n]*")*>|<\/[^\/>]+>)/g;
+		var startReg = /<[^\/][^<]+("[^\n]*")*>/;
 		var endReg = /<\/[^\/>]+>/;
 		var tagReg = /^<\/?([^\s]+)(>|\s)/;
-		var propReg = /\s*(((n-bind|n-on)?:[^\s=]+)="([^\s=]+)")|(([^\s=]+)="([^\r\t\n=]+)")/g;
+		var propReg = /\s*(((n-bind|n-on)?:[^\s=]+)="([^\s=]+)")|(([^\s=]+)="([^\r\t\n"]+)")|(n-else)/g;
+		//Fixed 去掉了=号的约束 
+		//Fixed "号导致的BUG,这样导致如果在n-if等中表达式涉及字符串的话使用单引号
 		var mustachReg = /\{\{\s*([^\s]*)\s*\}\}/g;
 		var startMatch;
 		var lastIndex = 0;
 		var tagStack = [];
 		var root;
+		//Fixed 去掉注释
+		html = html.replace(commentReg, '');
 		while ((startMatch = startEndReg.exec(html))) {
 			var tag;
 			var attrMap = {};
@@ -643,7 +716,12 @@
 				tag = startMatch[0].match(tagReg)[1];
 				if (startMatch[0].match(propReg)) {
 					startMatch[0].match(propReg).forEach(function(boundProp) {
-						attrMap[boundProp.split('=')[0].trim()] = boundProp.split('=')[1].replace(/"/g, '');
+						if (boundProp == 'n-else') {
+							attrMap[boundProp] = 'n-else';
+							return;
+						}
+						var seg = boundProp.indexOf('=');
+						attrMap[boundProp.substring(0, seg).trim()] = boundProp.substring(seg + 1, boundProp.length).replace(/"/g, '');
 					})
 				}
 				var astNode = {
@@ -655,7 +733,9 @@
 				if (tagStack.length) {
 					astNode.parent = tagStack[tagStack.length - 1];
 					tagStack[tagStack.length - 1].children.push(astNode);
-					tagStack.push(astNode);
+					if (astNode.tag != 'img' && astNode.tag != 'input') {
+						tagStack.push(astNode);
+					}
 				}
 				if (!tagStack.length && !root) {
 					root = astNode;
@@ -663,7 +743,8 @@
 				}
 			} else if (endReg.test(startMatch[0])) {
 				tag = startMatch[0].match(tagReg)[1];
-				if (tag != tagStack.pop().tag) {
+				var popAstNode = tagStack.pop();
+				if (tag != popAstNode.tag) {
 					throw new Error('err');
 				}
 			}
@@ -683,7 +764,6 @@
 					root: options.root
 				}, p)
 				var text = p.children.pop();
-				console.log(text)
 				p.children.push(child);
 				p.children.push(text);
 			});
@@ -691,13 +771,139 @@
 				options.root.diff();
 			});
 		}
+		//if托管 单例
+		//iftor []
+		//ifblock {keyword, ast, parent, path} [if语句块]
+		var IfTrustee = {
+			cur: 0,
+			iftors: [],
+			valve: true,
+			put: function(iftor) {
+				this.iftors.push(iftor);
+				this.valve = false;
+			},
+			signal: function(ast) {
+				if (this.iftors[this.cur] && !this.valve) {
+					this.valve = true;
+					this.compileIftor();
+					this.cur++;
+				}
+			},
+			insert: function(keyword, ifblock) {
+				if (!this.iftors[this.cur]) {
+					return;
+				}
+				this.iftors[this.cur].push({
+					keyword: keyword,
+					ifblock: ifblock
+				});
+			},
+			compileIftor: function() {
+				var fnBody = '';
+				var k = -1;
+				var asts = [];
+				var arg, order, parent, p, o, root, recalcu;
+				this.iftors[this.cur].forEach(function(item) {
+					k++;
+					var ifb = item.ifblock;
+					var ifr = ifb.path.find(ifb.ast.attrMap['n-' + item.keyword]);
+					if (ifr.recalcu) {
+						recalcu = ifr.recalcu;
+					}
+					if (!p) {
+						p = ifr.p;
+						o = ifr.o;
+					}
+					if (!arg) {
+						arg = ifr.arg;
+					}
+					if (!parent) {
+						parent = ifb.parent;
+					}
+					if (!order) {
+						order = ifb.order;
+					}
+					if (!root) {
+						root = ifb.options.root;
+					}
+					asts.push({
+						ast: ifb.ast,
+						options: ifb.options
+					});
+					switch (item.keyword) {
+						case 'if':
+							fnBody += 'if (' + (ifr.exp ? ifr.exp : ifr.arg) + ') {\n' +
+								'\tvar i = ' + k + ';\n' +
+								'\treturn ' + 'new dfsfn(asts[i].ast, asts[i].options, parent, order);\n' +
+								'}';
+							break;
+						case 'else-if':
+							fnBody += 'else if (' + (ifr.exp ? ifr.exp : ifr.arg) + ') {\n' +
+								'\tvar i = ' + k + ';\n' +
+								'\t' + 'return ' + 'new dfsfn(asts[i].ast, asts[i].options, parent, order);\n' +
+								'}';
+							break;
+						case 'else':
+							fnBody += 'else {\n' +
+								'\tvar i = ' + k + ';\n' +
+								'\t' + 'return ' + 'new dfsfn(asts[i].ast, asts[i].options, parent, order);\n' +
+								'}';
+							break;
+						default:
+							throw new Error(item.keyword + ' is not one of [if, else-if, else]');
+					}
+				});
+				if (recalcu) {
+					var _fn = new Function('arg', 'asts', 'dfsfn', 'options', 'parent', 'order', fnBody);
+				} else {
+					var _fn = new Function(arg, 'asts', 'dfsfn', 'options', 'parent', 'order', fnBody);
+				}
 
-		function dfsToCreateVNode(ast, options, parent) {
+				function ifRecalucte(v) {
+					return _fn(v, asts, dfsToCreateVNode, parent, order);
+				}
+				var child = ifRecalucte(o);
+				if (child) {
+					parent.insert(order, child)
+				}
+				if (recalcu) {
+					return;
+				}
+				var preChild = child;
+				p.__observer__.watch(arg, function(v) {
+					//Fixed 当n-if绑定的值不变时,不进行处理v
+					if (o == v) {
+						console.log(arg + ' is not change');
+						return;
+					} else {
+						var child = ifRecalucte(v);
+						if (typeof child == 'undefined' && typeof preChild != 'undefined') {
+							//remove
+							parent.remove(order);
+							root.diff.bind(root)();
+						} else if (typeof preChild == 'undefined' && typeof child != 'undefined') {
+							//replace
+							parent.insert(order, child);
+							//触发diff
+							root.diff.bind(root)();
+						}
+						o = v;
+						preChild = child;
+					}
+				});
+			}
+		}
+
+		function dfsToCreateVNode(ast, options, parent, order) {
 			var path = new Path(options.data, options.root);
 			var vnode = new VNode();
 			vnode.tag = ast.tag;
+			vnode.order = order;
+			vnode.parent = parent;
 			if (ast.tag == '#text') {
-				vnode.parent = parent;
+				if (!ast.text.trim()) {
+					IfTrustee.signal(ast); //向if托管器发送终结信号
+				}
 				vnode.text = ast.text;
 				vnode.content = '';
 				if (ast.expression) {
@@ -714,7 +920,11 @@
 							if (!isBind[r.arg]) {
 								isBind[r.arg] = true;
 								ob.watch(r.arg, new Watcher(calculate));
-								ob.watch(r.arg, options.root.diff.bind(options.root));
+								if (!ob.diff) {
+									//Fixed 修复 保证diff操作只加载一次
+									ob.watch(r.arg, options.root.diff.bind(options.root));
+									ob.diff = 1;
+								}
 							}
 							return ob.v[r.arg];
 						}
@@ -726,6 +936,7 @@
 				return vnode;
 			}
 			if (ast.attrMap['n-for'] && !ast.ignoreFor) {
+				IfTrustee.signal(); //向if托管器发送终结信号
 				var forAttr = ast.attrMap['n-for'].match(/\s*([^\s]+)\s+in\s+([^\s]+)\s*/)[2];
 				var alias = ast.attrMap['n-for'].match(/\s*([^\s]+)\s+in\s+([^\s]+)\s*/)[1];
 				var vnodes = [];
@@ -737,6 +948,7 @@
 				ff(forObj, vnodes, VNode);
 				for (var i = 0; i < vnodes.length; i++) {
 					vnodes[i].parent = parent;
+					vnodes[i].order = i + 1;
 					vnodes[i].tag = ast.tag;
 					for (var p in ast.attrMap) {
 						if (p != 'n-for') {
@@ -748,28 +960,83 @@
 							data: forObj[i],
 							alias: alias,
 							root: options.root
-						}, vnodes[i]);
+						}, vnodes[i], j);
 						if (Array.isArray(child)) {
 							vnodes[i].children = vnodes[i].children.concat(child);
-						} else {
+						} else if (child !== null) {
 							vnodes[i].children.push(child);
 						}
 					};
 				};
-				compileToPush(parent, ast, dfsToCreateVNode, forObj, alias);
+				compileToPush(parent, ast, dfsToCreateVNode, forObj, alias, i + 1);
 				return vnodes;
 			}
-			vnode.parent = parent;
+			if (ast.attrMap['n-if'] && !ast.ignoreIf) {
+				IfTrustee.signal(); //向if托管器发送终结信号
+				IfTrustee.put([]); //插入新的iftor
+				//构造ifblock
+				/*keyword, ast, parent, path*/
+				IfTrustee.insert('if', {
+					ast: ast,
+					parent: parent,
+					path: path,
+					options: options,
+					order: order
+				});
+				ast.ignoreIf = true;
+				return null;
+			}
+			if (ast.attrMap['n-else'] && !ast.ignoreElse) {
+				//构造ifblock
+				///*keyword, ast, parent, path*/
+				if (!IfTrustee.valve) {
+					IfTrustee.insert('else', {
+						ast: ast,
+						parent: parent,
+						path: path,
+						options: options,
+						order: order
+					});
+					ast.ignoreElse = true;
+					IfTrustee.signal(); //向if托管器发送终结信号
+					return null;
+				}
+			}
+			if (ast.attrMap['n-else-if'] && !ast.ignoreElseIf) {
+				IfTrustee.insert('else-if', {
+					ast: ast,
+					parent: parent,
+					path: path,
+					options: options,
+					order: order
+				});
+				ast.ignoreElseIf = true;
+				return null;
+			}
+			if (ast.tag == 'input') {
+				console.log(order)
+			}
 			//对虚拟node进行属性赋值
+			var ifFlag = false;
 			for (var prop in ast.attrMap) {
 				if (prop == 'n-for') {
 					continue;
 				}
-				if (/(^:\S*|^n-bind:\S*)/.test(prop)) {
+				if (prop == 'n-if' || prop == 'n-else') {
+					ifFlag = true;
+					continue;
+				}
+				if (/(^:\S*|^n-bind:\S*|n-model)/.test(prop)) {
 					var _pv = ast.attrMap[prop];
 					var _p = prop.split(':')[1];
-					var r = path.find(_pv)
+					var r = path.find(_pv);
 					var ob = r.p.__observer__;
+					if (prop == 'n-model') {
+						vnode.biBind = 'message';
+						vnode.$p = r.p; //获取的上一层对象
+						vnode.initVal = r.o;
+						continue;
+					}
 
 					function setBindAttr() {
 						vnode.props[_p] = ob.v[_pv];
@@ -777,7 +1044,6 @@
 					}
 					ob.watch(_pv, setBindAttr);
 					ob.watch(_pv, options.root.diff.bind(options.root));
-					console.log(ob)
 					vnode.props[_p] = r.o;
 					continue;
 				}
@@ -788,17 +1054,20 @@
 					data: options.data,
 					alias: options.alias,
 					root: options.root
-				}, vnode);
+				}, vnode, i);
 				if (Array.isArray(child)) {
 					vnode.children = vnode.children.concat(child);
-				} else {
+				} else if (child !== null) {
 					vnode.children.push(child);
 				}
 			};
+			if (!ifFlag) {
+				IfTrustee.signal(); //向if托管器发送终结信号
+			}
 			return vnode;
 		}
 		// function 
-		var vtree = dfsToCreateVNode(ast, options, null);
+		var vtree = dfsToCreateVNode(ast, options, null, 0);
 		return vtree;
 	}
 	/**
@@ -834,6 +1103,7 @@
 			root: this
 		});
 		this.$newVNode = root;
+		console.log(root)
 		this.$oldVNode = root.clone();
 		var oldRoot = document.getElementById(_el);
 		oldRoot.parentNode.insertBefore(root.render(), oldRoot)
